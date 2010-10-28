@@ -1,0 +1,1088 @@
+/**
+ *   G E N E T I C  
+ *       A L G O R I T H M
+ *  P O P U L A T I O N  
+ *     C L A S S 
+ *                  application to independent set problem
+ *                           (or min-vertex cover)
+ **/
+
+
+import java.awt.*;
+import java.awt.event.*;
+import java.awt.image.BufferedImage;
+import java.awt.geom.Line2D;
+import java.awt.geom.Rectangle2D;
+import java.math.*;
+import java.util.*;
+import java.util.Date;
+import javax.swing.*;
+import javax.swing.border.EtchedBorder;
+import javax.swing.border.TitledBorder;
+
+
+public class GApopulation extends JPanel implements Runnable {
+
+    //..INPUT PROBLEM
+    adjacencyList adjList;
+
+
+    //..PANEL DISPLAY
+    private Surface surf;
+
+    //..MULTI-THREADING
+    Thread  evolver;
+
+    //..GA STATUS
+    boolean hasAdjList = false;
+    boolean processingGA = false;
+    boolean paused  = true;
+    
+    //..POPULATION MANAGEMENT
+    ArrayList population;
+    ArrayList fitPopulation;
+    ArrayList childPopulation;
+
+
+    //..GA OPERATORS 
+    int mutationType = 0;          //0=default 2-pos inversion
+    int xoverType = 0;             //0=Uniform; 1=dualPoint
+    boolean elitism = false;
+    chromosome eliteFit;
+    chromosome bestChromo;
+    boolean masking = false;
+
+
+    //QUANTITIES
+    int populationSize;
+    int currentGeneration = 0;
+    int lastGen = 100;
+    int chromoLen;
+    double avgFit = 0.0;  //..AVERAGE FITNESS OF POPULATION
+    
+    //EXECUTION TIME
+    long algoTime = 0;
+
+    //RATES
+    double mutationRate;
+    double crossoverRate;
+
+    //RANDOMIZATION
+    int seed1;
+    int seed2;
+    Random poolRand;
+    Random selectionRand;
+    
+
+    public GApopulation(int sizeIn, adjacencyList adj) {
+
+        surf = new Surface();
+        surf.setBorder(new EtchedBorder());
+        this.add(surf); 
+        
+
+        adjList = adj;
+        populationSize = sizeIn;
+
+        population = new ArrayList();
+        fitPopulation = new ArrayList();
+        childPopulation = new ArrayList();
+
+        crossoverRate = 0.985;
+        mutationRate = 0.03;
+
+        seed1 = 12032;
+        seed2 = 4;
+
+        poolRand = new Random(seed1);
+        selectionRand = new Random(4);
+
+        eliteFit = null;    //..CHROMOSOME VARIABLE FOR ELITISM
+        bestChromo = null;  //..CHROMOSOME WITH BEST FITNESS (COULD BE TIES)
+    }
+
+
+
+    public void run() {
+	long timeNow;
+        while (processingGA) {
+	    
+            if (!paused) {
+		timeNow = System.currentTimeMillis();
+		evolver.setPriority(Thread.NORM_PRIORITY);
+                gotoNextGeneration();
+		algoTime += System.currentTimeMillis() - timeNow;
+                surf.setChromosome(get(1));
+                surf.setGenerationNum(currentGeneration);
+                surf.repaint();
+                if ((currentGeneration == lastGen) ||
+		    (avgFit >= 100)) {
+		    //..DEBUG//System.out.println(dump(0));
+                    paused = true;
+		}
+		
+		//..DEBUG STOP AFTER 1 GEN
+		//stop();
+
+            } else {
+		evolver.setPriority(Thread.MIN_PRIORITY);
+	    }
+            evolver.yield();
+        }
+        evolver = null;
+    }
+
+
+
+
+    public void init() {
+	if (hasAdjList) {
+
+	    //RESET
+	    clear();
+
+	    //GENERATE RANDOM CHROMOSOMES
+	    chromosome chromo;
+	    int genes = adjList.getNumVerticies();
+	    chromoLen = genes;
+	    for (int i = 1; i <= populationSize; i++) {
+		chromo = new chromosome(genes);
+		for (int j = 1; j <= genes; j++) {
+		    if (poolRand.nextBoolean()) {
+			chromo.setGene(j);
+		    }
+		}
+
+		population.add(chromo);
+	    }
+	    computeFitness();
+
+	    avgFit = getFitnessAvg();
+
+	    surf.setChromosomeSize(genes);
+	    surf.setChromosome(get(1));
+	    surf.setGenerationNum(currentGeneration);
+	    surf.start();
+	    surf.repaint();
+	}
+    }
+
+
+    public String getResultsInfo() {
+	String s = new String("");
+	s = s.concat("sGA for INDEPENDENT SET PROBLEM\n");
+	s = s.concat("SELECTION: roulette\n");
+
+	s = s.concat("ELITISM: ");
+	if (elitism) { s = s.concat("y\n"); }
+	else { s = s.concat("n\n"); 
+	}
+
+	s = s.concat("CROSSOVER: ");
+	if (xoverType == 0) { s = s.concat("uniform\n"); }
+	else { s = s.concat("2point\n");
+	}
+	
+	s = s.concat("MASKING: ");
+	if (masking) { s = s.concat("y\n");}
+	else {s = s.concat("n\n"); 
+	}
+
+	s = s.concat("MUTATION: ");
+	if (mutationType == 0) { s = s.concat("2 point inversion\n"); }
+	else if (mutationType == 1) { s = s.concat("low/high out-edge swap\n"); }
+	else if (mutationType == 2) { s = s.concat("rotation\n"); 
+	}
+
+	s = s.concat("POPULATION SIZE: "+populationSize+"\n");
+	s = s.concat("CHROMOSOME LENGTH: "+chromoLen+"\n");
+	s = s.concat("AVERAGE FITNESS: "+avgFit+"\n");
+	s = s.concat("BEST CHROMOSOME FITNESS: " + bestChromo.getFitness()+"\n");
+	s = s.concat("EVOLVED GENERATIONS: "+ currentGeneration+"\n");
+	s = s.concat("EXEC TIME: "+ algoTime + " ms\n");
+
+	return s;
+    }
+
+    public String dump(int which) {
+        String s = new String("");
+        chromosome chromo = null;
+        ArrayList p = null;
+        
+        if (which == 0) {p = population;}
+        else if (which == 1) {p = fitPopulation;}
+        else {p = childPopulation; 
+        }
+
+        for (Iterator i = p.iterator(); i.hasNext(); ) {
+            chromo = (chromosome) i.next();
+            s = s.concat(" "+chromo.dump()+"\n");
+            //s = s.concat("x"+chromo.dumpBadVerticies()+"\n");
+        }
+
+        return s;
+
+    }
+
+
+
+    //..COMPUTE FITNESS OF A PARTICULAR CHROMOSOME
+    //..THIS METHOD IS OVERLOADED  (SEE BELOW)
+
+    public void computeFitness(chromosome chromo) {
+        int numVerticies = adjList.getNumVerticies();
+        aLstVertex v1,v2;
+        BitSet totalBad = new BitSet(numVerticies);
+        BitSet tempBits = new BitSet(numVerticies);
+
+	//..CHECK ALL 1-VALUED GENES FOR EDGES TO OTHER
+	//..1-VALUED GENES
+	
+	int badNum = 0;
+	int numSetGenes =0;
+	boolean bad = false;
+	for (int j = 1; j <= numVerticies; j++ ) {
+	    if (chromo.getGene(j)) {
+		numSetGenes++;
+		v1 = (aLstVertex) adjList.vertexArray.get(j-1);
+		for (int l = 1; l <= numVerticies; l++) {
+		    if (v1.connections.get(l)) {tempBits.set(l);}
+		}
+		tempBits.and(chromo.getBits());
+		
+		// HOW MANY GENES ARE BAD? (LOWERING THE FITNESS VAL) 
+		
+		bad = false;
+		for (int k = 1; (k <= numVerticies) && !bad; k++) {
+		    if (tempBits.get(k)) {bad = true;}
+		}
+		if (bad) {badNum++;} 
+		
+		// 'OR' THE BAD VERTS TO THE TOTAL-ACCUMULATED-BITSET.
+		// IN THIS CASE THE 'BAD' VERTS ARE DUE TO A PARTICULAR
+		// GENE HAVING BEEN SET (VERTEX SELECTED).
+		// THIS WILL BE STORED LATER IN THE CHROMOSOME.
+		// I.E.: THE CHROMOSOME WILL STORE A BITSET WHICH 
+		// REPRESENTS THE BAD VERTICIES.  IF A BIT IS SET
+		// THEN THE VERTEX WITH THE CORRESPONDING BIT INDEX
+		// IS CAUSING PROBLEMS IN THE FITNESS.
+		
+		totalBad.or(tempBits);
+		tempBits.andNot(tempBits);
+	    }
+	    
+	}
+	
+	
+	//STORE BAD VERTICIES IN A BITSTREAM REPRESENTATION
+	//IN THE CHROMOSOME 
+	
+	chromo.storeBadVerticies(totalBad);
+	totalBad.andNot(totalBad);
+	
+	
+	//PASS DATA FOR FITNESS ASSIGNMENT  & CHECK FOR OPTIMAL
+	//NOTE IF CHROMOSOME IS NOW THE BEST IN THE POPULATION
+	
+	chromo.setFitness(numSetGenes,badNum);
+	
+	if (chromo.getFitness() > bestChromo.getFitness()) {
+	    bestChromo = chromo;
+	}
+
+	if ((badNum == 0) && (numSetGenes == numVerticies)) {
+	    stop();
+	}
+	
+	
+    }
+    
+    
+    public void computeFitness() {
+        int numVerticies = adjList.getNumVerticies();
+        aLstVertex v1,v2;
+        BitSet totalBad = new BitSet(numVerticies);
+        BitSet tempBits = new BitSet(numVerticies);
+	boolean foundOpt = false;
+	double best = 0.0;
+
+        for (Iterator i = population.iterator(); i.hasNext(); ) {
+            chromosome chromo = (chromosome) i.next();
+            int badNum = 0;
+            int numSetGenes =0;
+            boolean bad = false;
+            for (int j = 1; j <= numVerticies; j++ ) {
+                if (chromo.getGene(j)) {
+                    numSetGenes++;
+                    v1 = (aLstVertex) adjList.vertexArray.get(j-1);
+                    for (int l = 1; l <= numVerticies; l++) {
+                        if (v1.connections.get(l)) {tempBits.set(l);}
+                    }
+                    tempBits.and(chromo.getBits());
+                    
+                    // HOW MANY GENES ARE BAD? (LOWERING THE FITNESS VAL) 
+
+                    bad = false;
+                    for (int k = 1; (k <= numVerticies) && !bad; k++) {
+                        if (tempBits.get(k)) {bad = true;}
+                    }
+                    if (bad) {badNum++;} 
+
+                    // 'OR' THE BAD VERTS TO THE TOTAL-ACCUMULATED-BITSET.
+                    // IN THIS CASE THE 'BAD' VERTS ARE DUE TO A PARTICULAR
+                    // GENE HAVING BEEN SET (VERTEX SELECTED).
+                    // THIS WILL BE STORED LATER IN THE CHROMOSOME.
+                    // I.E.: THE CHROMOSOME WILL STORE A BITSET WHICH 
+                    // REPRESENTS THE BAD VERTICIES.  IF A BIT IS SET
+                    // THEN THE VERTEX WITH THE CORRESPONDING BIT INDEX
+                    // IS CAUSING PROBLEMS IN THE FITNESS.
+
+                    totalBad.or(tempBits);
+                    tempBits.andNot(tempBits);
+                }
+		
+            }
+
+
+            //STORE BAD VERTICIES IN A BITSTREAM REPRESENTATION
+            //IN THE CHROMOSOME 
+
+            chromo.storeBadVerticies(totalBad);
+            totalBad.andNot(totalBad);
+
+            //PASS DATA FOR FITNESS ASSIGNMENT
+	    
+	    if ((badNum == 0) && (numSetGenes == numVerticies)) {
+		foundOpt = true;
+	    }
+	    
+
+            chromo.setFitness(numSetGenes,badNum);
+
+	    if (chromo.getFitness() > best) {
+		best = chromo.getFitness();
+		bestChromo = chromo;
+	    }
+
+	    //System.out.println(chromo.dump());
+        }
+
+	if (foundOpt) { stop(); }
+    }
+
+
+
+
+    public void select() {
+        chromosome chromo = null;
+        chromosome selectedChromo = null;
+        //chromosome elitePos = null;
+	int elitePos = 0;
+        double tmpFitElite = 0;
+        double fittest = 0;
+        double fit;
+
+        int stop = 0;
+
+        if (elitism) {
+            stop = population.size() - 1;
+        }
+        else {
+            stop = population.size();
+        }
+
+        for (int h = 1; h <= stop; h++ ) {
+            //..ELITISM SELECTED
+            if (elitism) {
+                chromo = (chromosome) population.get(h-1);
+                tmpFitElite = chromo.getFitness();
+                if (tmpFitElite > fittest) {
+                    fittest = tmpFitElite;
+                    //eliteFit = new chromosome(chromo);
+                    elitePos = h;
+                }
+             }
+
+            //..CLASSICAL SELECTION: ROULETTE WHEEL
+            double t = selectionRand.nextFloat() * avgFit * stop;  
+            double tmp = 0.0;
+            int ii = 1;
+            for (Iterator i = population.iterator();  (i.hasNext() && (tmp <t)); ) {
+                chromo = (chromosome) i.next();
+                fit = chromo.getFitness();
+                tmp = tmp + fit;
+                ii++;  //..DEBUG
+            }
+	    //chromo.setSelect(true);
+            selectedChromo = new chromosome(chromo);
+            fitPopulation.add(selectedChromo);
+        }
+        
+        if (elitism) {
+	    //elitePos.setSelect(true);
+            fitPopulation.add((chromosome) population.get(elitePos-1));
+        }
+	
+    }
+
+
+
+    public void mutate() {
+        chromosome chromo = null;
+        int index1 = 0;
+        int index2 = 0;
+        aLstVertex v = null;
+
+
+        for (int i = 1; i <= population.size(); i++) {
+            if (poolRand.nextFloat() <= mutationRate) { 
+                chromo = (chromosome) population.get(i-1);
+
+                if (mutationType == 0) {
+                    index1 = (int) (poolRand.nextFloat() * chromoLen + 1);
+                    index2 = (int) (poolRand.nextFloat() * chromoLen + 1);
+                    
+                    while ( index2 == index1 ) {
+                        index2 = (int) (poolRand.nextFloat() * chromoLen);
+                    }
+
+                }
+                else if (mutationType == 1) {      //CUSTOM-MADE 4 I.S. PROBLEM
+                    index1 = 1;          //HIGHEST
+                    index2 = chromoLen;  //LOWEST
+                    for (int j = 1; j <= chromoLen; j++) {
+                        v = (aLstVertex) adjList.vertexArray.get(j-1);
+                        if ( v.getNumEdges() > index1) { index1 = j; }
+                        v = (aLstVertex) adjList.vertexArray.get(chromoLen-j);
+                        if ( v.getNumEdges() < index2 ) { index2 = j; }
+                    }
+
+                }
+		else if (mutationType == 2) {   //..RIGHT ROTATION
+		    BitSet b = new BitSet();
+		    for (int j = 1; j <= chromoLen - 1; j++) {
+			if (chromo.getGene(j)) {
+			    b.set(j+1);
+			}
+		    }
+		    if (chromo.getGene(chromoLen)) {
+			b.set(1);
+		    }
+		    chromo.bitstream = b;
+		   
+		}
+                
+		if (mutationType != 2) {
+		    if (chromo.getGene(index1)) {
+			//BLOCK IF MASKING SELECTED
+			if (!masking) {
+			    chromo.clearGene(index1);
+			}
+		    }
+		    else {
+			chromo.setGene(index1);
+		    }
+		    
+		    if (chromo.getGene(index2)) {
+			//BLOCK IF MASKING SELECTED
+			if (!masking) {
+			    chromo.clearGene(index2);
+			}
+		    }
+		    else {
+			chromo.setGene(index2);
+		    }
+		}
+                //computeFitness(chromo);   //..ONLY RECOMPUTE IF MUTATED
+            }
+        }
+    }
+
+
+    //..NOT BEING USED
+    private void mutateClassic(chromosome chromo) {
+        int index1 = (int) (poolRand.nextFloat() * chromoLen ); 
+        int index2 = (int) (poolRand.nextFloat() * chromoLen );
+        //        if (chromo.getGene(index1)
+
+        if (chromo.getGene(index1)) {
+            //BLOCK IF MASKING SELECTED
+                    if (!masking) {
+                        chromo.clearGene(index1);
+                    }
+        }
+        else {
+            chromo.setGene(index1);
+        }
+        
+    }
+
+    public void doublePntCross(int in1, int in2) {
+	//..GET CHROMOSOMES
+        chromosome p1 = (chromosome) fitPopulation.get(in1-1);
+        chromosome p2 = (chromosome) fitPopulation.get(in2-1);
+        int len = p1.length();
+	
+	//..FIND TWO POINTS (MAKE SURE NOT TOO CLOSE)
+	int point1 = selectionRand.nextInt(49) + 1;
+	int point2 = selectionRand.nextInt(49) + 1;
+	while (Math.abs(point1-point2) < 
+	             (int) Math.floor(0.10*len)) {
+	    point2 = selectionRand.nextInt(49) + 1;
+	}
+
+	//SWAP SUBSETS
+	int temp;
+	if (point1 > point2) {
+	    temp = point1; 
+	    point1 = point2;
+	    point2 = temp;
+	}
+	
+	chromosome c1 = new chromosome(len);
+	chromosome c2 = new chromosome(len);
+	int i;
+	for (i = 1; i < point1; i++) {
+	    if (p1.getGene(i)) {
+		c1.setGene(i);
+	    }
+	    if (p2.getGene(i)) {
+		c2.setGene(i);
+	    }
+	}
+	for (i = point1; i < point2; i++) {
+	    if (p2.getGene(i)) {
+		c1.setGene(i);
+	    }
+	    if (p1.getGene(i)) {
+		c2.setGene(i);
+	    }	    
+	}
+	for (i = point2; i <= len; i++) {
+	    if (p1.getGene(i)) {
+		c1.setGene(i);
+	    }
+	    if (p2.getGene(i)) {
+		c2.setGene(i);
+	    }	    
+	}
+
+        childPopulation.add(c1);
+        childPopulation.add(c2);
+	
+    }
+
+
+    public void uniformCross(int in1, int in2) {
+	
+        // UNIFORM WORKERS
+
+        chromosome p1 = (chromosome) fitPopulation.get(in1-1);
+        chromosome p2 = (chromosome) fitPopulation.get(in2-1);
+        int len = p1.length();
+
+        // DEBUG
+        //System.out.println("UNIFORM CROSSOVER:");
+        //System.out.println("p1:"+p1.dump());
+        //System.out.println("p2:"+p2.dump());
+        // END.DEBUG
+
+
+        chromosome flags = new chromosome(len);
+        chromosome c1 = new chromosome(len);
+        chromosome c2 = new chromosome(len);
+
+        
+
+
+        // MASKING WORKERS
+        // THE MASK WILL BE THE INVERSE OF A 
+        // CHROMOSOME'S badVerticies BITSET
+
+        boolean a,b; a = b = false;
+        BitSet m1 = new BitSet(len);
+        BitSet m2 = new BitSet(len);
+
+        m1.or(p1.getBadVerticies()); 
+        for (int i = 1; i <= len; i++) {
+            if (m1.get(i)) { 
+                m1.clear(i); 
+            }
+            else {
+                m1.set(i); 
+            }
+        }
+        m1.and(p1.getBits());
+
+
+        m2.or(p2.getBadVerticies()); 
+        for (int i = 1; i <= len; i++) {
+            if (m2.get(i)) { 
+                m2.clear(i);
+            }
+            else {
+                m2.set(i);
+            }
+        }
+        m2.and(p2.getBits());
+
+//          //DEBUG
+//          System.out.print("m1:");
+//          for (int i = 1; i<= len; i++) {
+//              if (m1.get(i)) { 
+//                  System.out.print("1");
+//              }
+//              else {
+//                  System.out.print(".");
+//              }
+//          }
+//          System.out.println("");
+//          //END.DEBUG
+//          //DEBUG
+//          System.out.print("m2:");
+//          for (int i = 1; i<= len; i++) {
+//              if (m2.get(i)) { 
+//                  System.out.print("1");
+//              }
+//              else {
+//                  System.out.print(".");
+//              }
+//          }
+//          System.out.println("");
+//          //END.DEBUG
+
+
+
+
+        // PERFORM THE CROSSOVER.
+        // DO MASKING IF REQUIRED
+
+        for (int i = 1; i <= len; i++) {
+            // RANDOMIZE THE UNIFORM CROSSOVER BITSTREAM
+            if (poolRand.nextBoolean()) {
+                flags.setGene(i);
+                if (p1.getGene(i)) { 
+                    c1.setGene(i);
+                } 
+                if (p2.getGene(i)) {
+                    c2.setGene(i);
+                }
+            } 
+            else {
+                if(p2.getGene(i)) {
+                    c1.setGene(i);
+                }
+                if(p1.getGene(i)) {
+                    c2.setGene(i);
+                }
+            }
+
+            if (masking) {
+                a = m1.get(i);
+                b = m2.get(i);
+
+                //DEBUG
+//                  if (a) { System.out.println("i"+i+"m1: 1"); }
+//                  else   { System.out.println("i"+i+"m1: ."); }
+//                  if (b) { System.out.println("i"+i+"m1: 1"); }
+//                  else   { System.out.println("i"+i+"m1: ."); }
+                //END.DEBUG
+                
+                if (a && !b) {
+                    if (p1.getGene(i)) {
+                        c1.setGene(i);
+                        c2.setGene(i);
+                    }
+                    else {
+                        c1.clearGene(i);
+                        c2.clearGene(i);
+                    }
+                }
+                else if (!a && b) {
+                    if (p2.getGene(i)) {
+                        c1.setGene(i);
+                        c2.setGene(i);
+                    }
+                    else {
+                        c1.clearGene(i);
+                        c2.clearGene(i);
+                    }
+                }
+                else if (a && b) {
+                    if (p1.getGene(i)) {
+                        c1.setGene(i);
+                    }
+                    else {
+                        c1.clearGene(i);
+                    }
+
+                    if (p2.getGene(i)) {
+                        c2.setGene(i);
+                    }
+                    else {
+                        c2.clearGene(i);
+                    }
+                }
+            }
+
+        }
+        
+//          System.out.println("c1:"+c1.dump());
+//          System.out.println("c2:"+c2.dump());
+
+        childPopulation.add(c1);
+        childPopulation.add(c2);
+    }
+
+
+
+    public void recombinate() {
+        //CROSSOVER TWO PARENTS TO CREATING TWO NEW CHILDREN
+
+
+        int stop = populationSize / 2;
+
+        for (int i = 1; i <= stop; i++){
+
+            //RANDOMLY SELECT 2 PARENTS (NOT EQUALS)
+
+            int p1Index = (int) (selectionRand.nextFloat()*populationSize) + 1;
+            int p2Index = (int) (selectionRand.nextFloat()*populationSize) + 1;
+            while (p1Index == p2Index) {
+                p1Index = (int) (selectionRand.nextFloat()*populationSize) + 1;
+                p2Index = (int) (selectionRand.nextFloat()*populationSize) + 1;
+            }
+
+            //CROSSOVER EITHER UNIFORM SCHEME or DOUBLE POINT
+            if (poolRand.nextFloat() <= crossoverRate) {
+                if (xoverType == 0) {    
+		    uniformCross(p1Index,p2Index);
+		}
+		else if (xoverType == 1) {  
+		    doublePntCross(p1Index,p2Index);
+		}
+
+            } 
+            else {
+                //                System.out.println("NoXOver:"+i);
+                chromosome p1 = new chromosome((chromosome) fitPopulation.get(p1Index-1));
+                chromosome p2 = new chromosome((chromosome) fitPopulation.get(p2Index-1));
+                childPopulation.add(p1);
+                childPopulation.add(p2);
+            }
+            
+        }
+	
+	
+	population.clear();
+	population = null;
+        population = new ArrayList(childPopulation);
+        childPopulation.clear();
+        fitPopulation.clear();
+	computeFitness();
+    }
+
+    public void gotoNextGeneration() {
+        select();
+        //System.out.println(dump(1)); // DEBUG FOR CHECKING ELITISM
+        recombinate();
+        mutate();
+        currentGeneration++;
+	avgFit = getFitnessAvg();
+
+    }
+
+    
+
+    public void clear() {
+        //CLEAR POPULATIONS
+        //CLEAR ADJACENCY LIST
+
+        population.clear();
+        childPopulation.clear();
+        fitPopulation.clear();
+        poolRand.setSeed(seed1);
+        selectionRand.setSeed(seed2);
+
+        currentGeneration = 0;
+    }
+
+    public void setAdjacencyList(adjacencyList a) {
+        adjList = a;
+        hasAdjList = true;
+        init();
+
+    }
+
+    public BitSet get(int idx) {
+        chromosome chromo = null;
+        BitSet b = null;
+        if ((population.size() > 0) && (idx > 0)) {
+            chromo = (chromosome) population.get(idx-1);
+            b = chromo.getBits();
+        }
+        return b;
+    }
+
+
+    public void setMasking(boolean flg) { masking = flg; }
+    public void setElitism(boolean flg) { elitism = flg; }
+
+    public void start() {
+        if (hasAdjList && paused) {
+            processingGA = true;
+	    paused = false;
+            //init();  MOVED TO SETADJACENCYLIST()
+            evolver = new Thread(this);
+            evolver.setPriority(Thread.NORM_PRIORITY);
+            evolver.setName("Genetic Algorithm");
+	    algoTime = 0;
+            evolver.start();
+
+        }
+    }
+
+    public void stop() {
+	paused = true;
+	processingGA = false;
+        //surf.stop();
+    }
+
+	
+    public void setPause(boolean p) {
+        paused = p;
+    }
+
+
+    public void setMutationType(int mTypeIn) {
+        mutationType = mTypeIn;
+    }
+
+
+    public void setCrossOver(int x) {
+	if ((x >= 0) && (x <= 1)) {
+	    xoverType = x;
+	}
+	else { xoverType = 0; }  //DEFAULT
+    }
+
+    private double getFitnessAvg() {
+        double f = 0.0;
+
+        chromosome chromo;
+        for (Iterator i = population.iterator(); i.hasNext(); ) {
+            chromo = (chromosome) i.next();
+            f = f + chromo.getFitness();
+        }
+	f = f / populationSize;
+
+        return f;
+    }
+
+
+    public void setStopGen(int g) {
+        lastGen = g;
+    }
+
+    public void setPopSize(int s) {
+	if (!processingGA) { 
+	    populationSize = s; 
+	    init();
+	}
+    }
+
+    public int getGenNum() { return currentGeneration; }
+
+    public boolean isProcessing() { return !paused; }
+
+
+    //------------------------------------------------------------
+    public class Surface extends JPanel implements Runnable {
+
+        public Thread thread;
+        public long sleepAmount = 1000;
+        private int w, h;
+        private BufferedImage bimg;
+        private Graphics2D big;
+        private Font font = new Font("Times New Roman", Font.PLAIN, 11);
+        private int columnInc;
+        private int ascent, descent;
+        private ArrayList shapestream = null;
+        private BitSet solBits = null;
+        private boolean initOk = false;
+
+        private int genNum = 0;
+
+        public Surface() {
+            JLabel l = new JLabel("TEST");
+            add(l);
+            setBackground(Color.black);
+            this.setBorder(new EtchedBorder());
+        }
+
+
+
+        public void setChromosomeSize(int sizeIn) {
+            if (sizeIn > 0) {
+                shapestream = new ArrayList();
+                Rectangle2D rrect;
+                for (int i = 1; i <= sizeIn; i++) {
+                    rrect = new Rectangle2D.Float(0,0,4,4);
+                    shapestream.add(rrect);
+                }
+                initOk = true;
+            }
+        }
+
+
+        public void setChromosome(BitSet solBitsIn) {
+            solBits = solBitsIn;
+        }
+        
+
+        public void setGenerationNum(int p) {
+            genNum = p;
+        }
+
+
+        public Dimension getMinimumSize() {
+            return getPreferredSize();
+        }
+
+        public Dimension getMaximumSize() {
+            return getPreferredSize();
+        }
+
+        public Dimension getPreferredSize() {
+            return new Dimension(600,150);
+        }
+
+            
+        public void paint(Graphics g) {
+
+            if (big == null) {
+                return;
+            } 
+            else {
+                
+            big.setBackground(getBackground());
+            big.clearRect(0,0,w,h);
+
+            // .. Draw allocated and used strings ..
+            big.setColor(Color.green);
+            big.drawString("GEN: "+currentGeneration,
+			   4.0f, (float) ascent+0.5f);
+            big.drawString("AVG FIT: "+avgFit, 4, h-descent);
+
+
+            big.translate(20,20);
+            int xhome = 20;
+            int yhome = 20;
+
+            // .. Draw current solution ..
+            if (initOk) {
+                Rectangle2D rrect;
+                int j = 1; 
+                boolean toggleLineColor = false;
+                for (Iterator i = shapestream.iterator(); i.hasNext(); ) {
+                    rrect = (Rectangle2D) i.next();
+                    if (solBits.get(j)) {
+                        big.setColor(Color.blue);
+                    }
+                    else {
+                        big.setColor(Color.lightGray);
+                    }
+                    big.fill(rrect);
+                    big.setColor(Color.white);
+                    big.draw(rrect);
+                    big.translate(4,0);
+                    xhome += 4;
+                    toggleLineColor = !toggleLineColor;
+                    if (( (j-1) % 100 ) == 99 ) {
+                        big.translate(-100*4,4); 
+                        xhome += -100*4;
+                        yhome += 4;
+                    }
+                    j++;
+                }
+                big.translate(-xhome,-yhome);   
+            }
+            g.drawImage(bimg, 0, 0, this);
+            }
+        }
+
+
+        public void start() {
+            thread = new Thread(this);
+            thread.setPriority(Thread.MIN_PRIORITY);
+            thread.setName("Painter");
+            thread.start();
+
+        }
+
+
+        public synchronized void stop() {
+            thread = null;
+            notify();
+        }
+
+
+        public void run() {
+
+            while (!isShowing() || getSize().width == 0) {
+                try {
+                    thread.sleep(500);
+                } catch (InterruptedException e) { return; }
+            }
+    
+            while (isShowing()) {
+                Dimension d = getSize();
+                if (d.width != w || d.height != h) {
+                    w = d.width;
+                    h = d.height;
+                    bimg = (BufferedImage) createImage(w, h);
+                    big = bimg.createGraphics();
+                    big.setBackground(getBackground());
+                    big.clearRect(0,0,w,h);
+                    big.setFont(font);
+                    FontMetrics fm = big.getFontMetrics(font);
+                    ascent = (int) fm.getAscent();
+                    descent = (int) fm.getDescent();
+                    repaint();
+                }
+		thread.yield();
+            }
+            thread = null;
+        }
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+}
+
+
+
+
+
